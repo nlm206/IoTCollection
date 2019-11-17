@@ -67,7 +67,7 @@ extern volatile uint8_t dSpace_Alive;
 /* USER CODE END EV */
 
 /******************************************************************************/
-/*           Cortex-M0+ Processor Interruption and Exception Handlers          */
+/*           Cortex-M0+ Processor Interruption and Exception Handlers          */ 
 /******************************************************************************/
 /**
   * @brief This function handles Non maskable interrupt.
@@ -133,15 +133,15 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-  if (dSpace_Alive >=2){ // LED2-blinking
+  if (dSpace_Alive > 2){ // LED2-blinking
     iCnt1++;
     if (iCnt1 > 500) {
-      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+      //HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
       iCnt1 = 0;
     }
   }
 
-  if (led3_blink == 1){
+  if (led3_blink == 1){ // LED3-blinking
     iCnt2++;
     if (iCnt2 > 500) {
       HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
@@ -159,18 +159,35 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
+  * @brief This function handles EXTI line 4 to 15 interrupts.
+  */
+void EXTI4_15_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI4_15_IRQn 0 */
+
+  /* USER CODE END EXTI4_15_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13);
+  /* USER CODE BEGIN EXTI4_15_IRQn 1 */
+
+  /* USER CODE END EXTI4_15_IRQn 1 */
+}
+
+/**
   * @brief This function handles TIM2 global interrupt.
   */
 void TIM2_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM2_IRQn 0 */
+	// 2 seconds timeout timer - handler
 
   /* USER CODE END TIM2_IRQn 0 */
   HAL_TIM_IRQHandler(&htim2);
   /* USER CODE BEGIN TIM2_IRQn 1 */
 
   //HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-  dSpace_Alive += 1;
+  if (dSpace_Alive < 5){
+    dSpace_Alive += 1;
+  }
   /* USER CODE END TIM2_IRQn 1 */
 }
 

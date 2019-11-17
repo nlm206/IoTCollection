@@ -24,12 +24,19 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h> // strlen
+#include <stdlib.h>  // atoi
 #include <stdio.h>  // sprintf
 #include <math.h>   // sin\cos
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef enum {
+  DATA_FRAME_12 = 12,
+  DATA_FRAME_9 = 9,
+  DATA_FRAME_BOTH = 0,
+  DATA_FRAME_INVALID
+} eDATA_FRAME_t;
 
 /* USER CODE END PTD */
 
@@ -57,8 +64,20 @@ uint8_t received_data;
 volatile uint8_t received_buffer_size = 0;
 volatile uint8_t command_handler_request = 0; // 0=NO, 1=Process
 
-volatile int8_t led3_blink = -1;   // 0=OFF, 1=blink, 2=ON
-volatile uint8_t dSpace_Alive = 0; // =0, dSpace is alive, !=0, dSpace is disconnected
+volatile int8_t led3_blink = -1;      // 0=OFF, 1=blink, 2=ON
+volatile uint8_t dSpace_Alive = 1;    // =0, dSpace is alive, !=0, dSpace is disconnected
+volatile uint8_t dSpace_req_data = 0; // =0, dSpace not request data, =1, dSpace requested for data
+
+// Configuration - Variables
+uint8_t b_encoder_1_enable = 1;
+uint8_t b_encoder_2_enable = 1;
+uint8_t b_encoder_3_enable = 1;
+uint8_t b_mcu_dspace_enable = 0;
+uint8_t b_mcu_pc_terminal_enable = 0;
+uint8_t b_setting_mode = 0;
+eDATA_FRAME_t data_frame_mcu2termial = DATA_FRAME_12;
+int32_t b_frequency_ms = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,21 +89,54 @@ static void MX_TIM2_Init(void);
 static void MX_TIM21_Init(void);
 /* USER CODE BEGIN PFP */
 
+uint32_t Read_SSI_SPIx(int index);
+uint32_t raw_data[3];              // Raw-Data of Encoders
+
+int Cal_EncoderData(eDATA_FRAME_t data_frame, uint32_t raw_data[3],
+		uint8_t *array_data, int32_t angle_data[3]);
+uint8_t array_data[13];            // maximum 13-byte array of data
+int32_t angle_data[3];             // angle in degree - scaled 1000x
+
+void Generate_CRCTable();
+uint8_t crc_table[256];            // CRC look-up table
+
+uint8_t CRCChecksum(uint8_t *data, uint8_t data_len);
+uint8_t CRC_Cal = 0;               // Computed CRC
+
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+// BUTTON Press Interrupt Handler
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if(huart->Instance == USART1)
+  if (GPIO_Pin == GPIO_PIN_13)
   {
-    dSpace_Alive = 0;
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+
   }
 
+}
+
+// UART RECEIVE Complete Callback
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  // DSpace Connected UaRT
+  if(huart->Instance == USART1)
+  {
+	if (received_data == 'd') {
+      dSpace_Alive = 0; // dSpace is alive!
+      dSpace_req_data = 1;
+      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+	}
+	if (received_data == 'n'){
+	  dSpace_Alive = 3; // set to allow LED-2 blink
+	  dSpace_req_data = 1;
+	}
+  }
+
+  // PC-Terminal Connected UaRT
   if(huart->Instance == USART2)
   {
     if (received_buffer_size == 0){
@@ -116,21 +168,35 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+
+void CommandDecoder();
+
+// Command Handler
 void Cmd_Handler(){
   uint8_t i = 0;
   if (command_handler_request > 0) {
     if (command_handler_request == 1 && received_buffer_size > 0){
-      sprintf(buffer, "Command RECEIVED: "); HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);
+      MY_PRINT_0(buffer, "Command RECEIVED: ");
     }
+
+    // After 1-sec since the starting command '@' has been received, there is no '#' comming
+    // in the 1-sec timeout handler, command_handler_request is set to 2.
     if (command_handler_request == 2 && received_buffer_size > 0){
-      sprintf(buffer, "BAD Command RECEIVED: "); HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);
+      MY_PRINT_0(buffer, "BAD Command RECEIVED: ");
     }
+    // a valid command received
     if (command_handler_request >= 1 && received_buffer_size > 0) {
       for (i = 0; i < received_buffer_size; i++){
-        sprintf(buffer, "%d (%c) - ", buffer_rx[i], buffer_rx[i]); HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);
+        buffer[i] = buffer_rx[i];
       }
+      buffer[received_buffer_size] = '\n';
+      HAL_UART_Transmit(&huart2, (uint8_t *) buffer, received_buffer_size + 1, 5000);
+
+      // Command Decoder - SOlving here
+      CommandDecoder();
     }
-    buffer[0] = '\n'; HAL_UART_Transmit(&huart2, (uint8_t *) buffer, 1, 5000);
+
+    // clear the buffer
     command_handler_request = 0;
     for (i = 0; i < received_buffer_size; i++){
         buffer_rx[i] = 0;
@@ -148,8 +214,7 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
   //uint32_t nCount = 0;
-  //uint8_t i;
-  // "${openstm32_openocd_path}/openocd"
+  int num_byte = -1;
   /* USER CODE END 1 */
 
 
@@ -176,8 +241,13 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM21_Init();
   /* USER CODE BEGIN 2 */
+
+  // Initialize UART-2 REceive Complete Interrupt with 1-byte buffer
   HAL_UART_Receive_IT(&huart2, &received_data, 1);
+
+  // Initialize UART-2 Transmit Complete Interrupt with 10-byte buffer
   HAL_UART_Transmit_IT(&huart2, buffer_tx, 10);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -186,23 +256,68 @@ int main(void)
 
   while (1)
   {
-	  if (dSpace_Alive == 0){ // dSpace is alive!
-      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-    }
-    if (led3_blink == 0){ // LED3 is OFF!
-      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-    }
-    if (led3_blink == 2){ // LED3 is ON!
-      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-    }
-	  HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  if (b_frequency_ms > 0)
+	             HAL_Delay(b_frequency_ms);
     Cmd_Handler();
 
-    //sprintf(buffer, "out={%lu, size=%d, value=%d}\n", nCount++, received_buffer_size, received_data);
-		//HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);
+    // Read raw-data from encoders
+    if (b_mcu_dspace_enable == 1 || b_mcu_pc_terminal_enable == 1){
+      if (b_encoder_1_enable == 1)
+        raw_data[0] = Read_SSI_SPIx(0);
+      if (b_encoder_2_enable == 1)
+        raw_data[1] = Read_SSI_SPIx(1);
+      if (b_encoder_3_enable == 1)
+        raw_data[2] = Read_SSI_SPIx(2);
+    }
+
+    // Prepare data and send to Terminal
+    if (b_setting_mode == 0 && b_mcu_pc_terminal_enable == 1){
+      // convert encoder-data into an array bytes of data
+      num_byte = Cal_EncoderData(data_frame_mcu2termial, raw_data,
+			  array_data, angle_data);
+      if (num_byte > 0)
+      {
+    	// Compute CRC code
+        CRC_Cal = CRCChecksum(array_data, num_byte);
+
+        // Save the computed CRC into the last element of the array
+        array_data[num_byte] = CRC_Cal;
+
+        // Increase the size of the array
+        num_byte += 1;
+
+        // Now send the array to Terminal
+        HAL_UART_Transmit(&huart2, array_data, num_byte, 5000);
+       }
+
+
+    }
+
+    // Prepare data and transmit to DSpace
+    if (dSpace_req_data == 1 && b_mcu_dspace_enable == 1){
+      // convert encoder-data into an array bytes of data
+      num_byte = Cal_EncoderData(DATA_FRAME_9, raw_data, array_data, angle_data);
+
+      if (num_byte > 0)
+      {
+        // Compute CRC code
+        CRC_Cal = CRCChecksum(array_data, num_byte);
+
+        // Save the computed CRC into the last element of the array
+        array_data[num_byte ] = CRC_Cal;
+
+        // Increase the size of the array
+        num_byte += 1;
+
+        // Now send the array to dSpace
+        HAL_UART_Transmit(&huart1, array_data, num_byte, 5000);
+      }
+
+      dSpace_req_data = 0;
+    }
   }
   /* USER CODE END 3 */
 }
@@ -455,9 +570,255 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD3_GPIO_Port, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI4_15_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_15_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
+uint32_t Read_SSI_SPIx(int index) {
+  uint32_t data1 = 0;
+  return data1;
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param [IN] eDATA_FRAME_t: data_frame (DATA_FRAME)
+  * @param [IN] uint32_t raw_data[3]: raw-data of encoders
+  * @param [OUT] uint8_t *array_data (not including CRC)
+  * @param [OUT] int32_t angle_data[3]
+  * @retval int: # of bytes returned
+  */
+int Cal_EncoderData(eDATA_FRAME_t data_frame, uint32_t raw_data[3], uint8_t *array_data, int32_t angle_data[3])
+{
+  uint32_t enc_data[3];              // Encoder Data either RAW-DATA or ANGLE-DATA
+  int idx = 0, i;
+  uint32_t scale = 1000;
+  uint32_t value;
+  float convert_factor = 360.0f * scale / MAX_VALUE_19_BIT;
+
+  switch (data_frame){
+    case DATA_FRAME_12:
+      for (idx = 0; idx < 3; idx++)
+      {
+        value = raw_data[idx] & (uint32_t)0x007FFFF0;
+        value = value / 16;         // last bit is ERROR bit, value >>= 4
+        //enc_data[idx] = value;
+        enc_data[idx] = (uint32_t)(value * convert_factor);
+      }
+      break;
+    case DATA_FRAME_9:
+      for (idx = 0; idx < 3; idx++)
+      {
+        enc_data[idx] = raw_data[idx];
+      }
+      break;
+  default:
+    return -1;
+  }
+  idx = 0;
+
+  for (i = 0; i < 3; i++){
+    array_data[idx++] = (uint8_t)(enc_data[i] & 0xFF);                   // 1st byte
+    array_data[idx++] = (uint8_t)((uint32_t)(enc_data[i]>>8) & 0xFF);    // 2nd byte
+    array_data[idx++] = (uint8_t)((uint32_t)(enc_data[i]>>16) & 0xFF);   // 3rd byte
+    if (data_frame == DATA_FRAME_12)
+      array_data[idx++] = (uint8_t)((uint32_t)(enc_data[i]>>24) & 0xFF); // 4th byte
+  }
+
+  return idx;
+}
+
+// Generate CRC Checksum Table
+// Source: http://www.sunshine2k.de/articles/coding/crc/understanding_crc.html
+void Generate_CRCTable() {
+  const uint8_t generator = 0x1D;
+  uint8_t currentByte;
+  for (int divident = 0; divident < 256; divident++) {
+    currentByte = (uint8_t) divident;
+    // calculate the CRC-8 value for current byte
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      if ((currentByte & 0x80) != 0) { // 0x80 = 0b10000000
+        currentByte <<= 1;           // Shift-to-left 1 bit
+        currentByte ^= generator;    // XOR
+      }
+      else {
+        currentByte <<= 1;           // Shift-to-left 1 bit
+      }
+    }
+    // store CRC value in lookup table
+    crc_table[divident] = currentByte;
+  }
+  crc_table[0] = 1;
+}
+
+uint8_t CRCChecksum(uint8_t *data, uint8_t data_len){
+  uint8_t crc = 0xAB; // CRC_0
+  uint8_t tmp;
+  for (int i = 0; i < (int)data_len; i++) {
+    tmp = data[i] ^ crc;
+    crc = crc_table[tmp];
+  }
+
+  return crc;
+}
+
+
+void CommandDecoder()
+{
+  // Decode the command
+  uint8_t cmd_grp = buffer_rx[1];
+  uint8_t data_len = buffer_rx[2];
+  char data_buff[256];
+  uint8_t cmd_sub = 0xFF;
+  if (data_len >= 1){
+    cmd_sub = buffer_rx[3];
+  }
+  switch (cmd_grp){
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '0':
+      if (cmd_sub == '0'){ // setting-menu
+        MY_PRINT_0(buffer, "@010# : Setting - Mode\n");
+        MY_PRINT_0(buffer, "@011# : Running - Mode\n");
+        MY_PRINT_0(buffer, "@111# : Turn ON Encoder 1\n");
+        MY_PRINT_0(buffer, "@110# : Turn OFF Encoder 1\n");
+        MY_PRINT_0(buffer, "@211# : Turn ON Encoder 2\n");
+        MY_PRINT_0(buffer, "@210# : Turn OFF Encoder 2\n");
+        MY_PRINT_0(buffer, "@311# : Turn ON Encoder 3\n");
+        MY_PRINT_0(buffer, "@310# : Turn OFF Encoder 3\n");
+        MY_PRINT_0(buffer, "@410# : MCU Sends RAW_DATA to TERMINAL\n");
+        MY_PRINT_0(buffer, "@411# : MCU Sends ANGLE_DATA to TERMINAL\n");
+        MY_PRINT_0(buffer, "@73100# : Set frequency of 100ms\n");
+        MY_PRINT_0(buffer, "@810# : Update Encoders to TERMINAL\n");
+        MY_PRINT_0(buffer, "@811# : Stop Updating to TERMINAL\n");
+        MY_PRINT_0(buffer, "@910# : Update Encoders to DSpace\n");
+        MY_PRINT_0(buffer, "@911# : Stop Updating Encoders to DSpace\n");
+        b_setting_mode = 1;
+        led3_blink = 1;
+      }
+      else if (cmd_sub == '1') { // Enter running mode
+    	MY_PRINT_0(buffer, "Enter Running Mode\n");
+        b_setting_mode = 0;
+        if (b_mcu_pc_terminal_enable == 1){ // LED3 is ON!
+          HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+          led3_blink = 1;
+        }
+        else { // LED3 is OFF!
+          HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+          led3_blink = 0;
+        }
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '1':              // Encoder -1
+      if (cmd_sub == '1'){ // turn on
+    	MY_PRINT_0(buffer, "TURN-ON Encoder-1\n");
+        b_encoder_1_enable = 1;
+      }
+      else if (cmd_sub == '0'){ // turn off
+        MY_PRINT_0(buffer, "TURN-OFF Encoder-1\n");
+        b_encoder_1_enable = 0;
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '2':              // Encoder -2
+      if (cmd_sub == '1'){ // turn on
+        MY_PRINT_0(buffer, "TURN-ON Encoder-2\n");
+        b_encoder_2_enable = 1;
+      }
+      else if (cmd_sub == '0'){ // turn off
+        MY_PRINT_0(buffer, "TURN-OFF Encoder-2\n");
+        b_encoder_2_enable = 0;
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '3':              // Encoder -3
+      if (cmd_sub == '1'){ // turn on
+    	MY_PRINT_0(buffer, "TURN-ON Encoder-3\n");
+        b_encoder_3_enable = 1;
+      }
+      else if (cmd_sub == '0'){ // turn off
+    	MY_PRINT_0(buffer, "TURN-OFF Encoder-3\n");
+        b_encoder_3_enable = 0;
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '4':              // DATA Format
+      if (cmd_sub == '0')  { // MCU sends RAW-Data to Terminal
+    	MY_PRINT_0(buffer, "MCU sends RAW-Data to Terminal\n");
+        data_frame_mcu2termial = DATA_FRAME_9;
+      }
+      else if (cmd_sub == '1')  { // MCU sends ANGLE-Data to Terminal
+    	MY_PRINT_0(buffer, "MCU sends ANGLE-Data to Terminal\n");
+        data_frame_mcu2termial = DATA_FRAME_12;
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+        data_frame_mcu2termial = DATA_FRAME_INVALID;
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '7': // Frequency
+      if (data_len <= '9' && data_len >= '0'){ //  maximum of 4-byte frequency
+        for (int i = 0; i < data_len - '0'; i++){
+        	data_buff[i] = buffer_rx[3+i];
+        }
+        data_buff[data_len - '0'] = '\0';
+        b_frequency_ms = atoi(data_buff);
+        MY_PRINT_F(buffer, "Frequency is set to %ld (ms)\n", b_frequency_ms);
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), data_len(%c)\n", cmd_grp, data_len);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '8': // Update Encoders to Terminal
+      if (cmd_sub == '1'){ // Encoder Data is sent to Terminal
+        b_mcu_pc_terminal_enable = 1;
+        MY_PRINT_0(buffer, "Update Encoders to Terminal\n");
+      }
+      else if (cmd_sub == '0') {
+        b_mcu_pc_terminal_enable = 0;
+        MY_PRINT_0(buffer, "Stop Updating Encoders to Terminal\n");
+      }
+      else {
+        MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    case '9': // Update Encoders to DSpace
+      if (cmd_sub == '1'){ // Encoder Data is sent to Dspace
+        b_mcu_dspace_enable = 1;
+        MY_PRINT_0(buffer, "Update Encoders to DSpace\n");
+      }
+      else if (cmd_sub == '0') {
+        b_mcu_dspace_enable = 0;
+        MY_PRINT_0(buffer, "Stop Updating Encoders to DSpace\n");
+      }
+      else {
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c), CMD_SUB(%c)\n", cmd_grp, cmd_sub);
+      }
+      break;
+    ////////////////////////////////////////////////////////////////////////////////////
+    default:
+    	MY_PRINT_F(buffer, "Invalid Command CMD_GRP(%c)\n", cmd_grp);
+      break;
+  }
+}
+
 
 /* USER CODE END 4 */
 

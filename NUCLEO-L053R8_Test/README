@@ -5,7 +5,7 @@
 $ brew install openocd
 $ openocd -f interface/stlink-v2-1.cfg -f target/stm32l0.cfg -c "program NUCLEO-L053R8_Test.elf verify reset exit"
 
-$ openocd -f interface/stlink-v2-1.cfg -f target/stm32l4x.cfg -c "program NUCLEO-L053R8_Test.elf 0x08000000 verify exit"
+$ openocd -f interface/stlink-v2-1.cfg -f target/stm32l0.cfg -c "program NUCLEO-L053R8_Test.elf 0x08000000 verify exit"
 
 
 # Install st-link with the following command

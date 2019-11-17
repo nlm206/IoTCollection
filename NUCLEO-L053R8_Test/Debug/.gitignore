@@ -1,7 +1,4 @@
+
 /Drivers/
 /Src/
 /startup/
-makefile
-objects.list
-objects.map
-sources.mk

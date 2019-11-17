@@ -60,6 +60,7 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define B1_Pin GPIO_PIN_13
 #define B1_GPIO_Port GPIOC
+#define B1_EXTI_IRQn EXTI4_15_IRQn
 #define USART_TX_Pin GPIO_PIN_2
 #define USART_TX_GPIO_Port GPIOA
 #define USART_RX_Pin GPIO_PIN_3
@@ -73,6 +74,25 @@ void Error_Handler(void);
 #define TCK_Pin GPIO_PIN_14
 #define TCK_GPIO_Port GPIOA
 /* USER CODE BEGIN Private defines */
+
+#define MAX_VALUE_12_BIT 				(uint16_t)4096
+#define MAX_VALUE_18_BIT 				(uint32_t)262144
+#define MAX_VALUE_19_BIT 				(uint32_t)524288
+#define MAX_VALUE_20_BIT 				(uint32_t)1048576
+#define MAX_VALUE_21_BIT 				(uint32_t)2097152
+
+
+#define MY_PRINT_0(buffer, pString) \
+	do {\
+		sprintf(buffer, pString);\
+		HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);\
+	} while (0);
+
+#define MY_PRINT_F(buffer, format, ...) \
+	do {\
+		sprintf(buffer, format, __VA_ARGS__);\
+		HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);\
+	} while (0);
 
 /* USER CODE END Private defines */
 
