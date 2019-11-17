@@ -42,6 +42,14 @@ typedef enum {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TERMINAL_USART  USART2
+#define DSPACE_USART  USART1
+
+#define terminal_huart huart2
+#define dspace_huart huart1
+
+#define htim_1s    htim21
+#define htim_2s    htim2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -60,7 +68,7 @@ UART_HandleTypeDef huart2;
 static char buffer[1000];
 uint8_t buffer_tx[10]={69, 77, 67, 85, 46, 69, 85, 13, 10};
 volatile uint8_t buffer_rx[3000];
-uint8_t received_data;
+uint8_t received_data, received_data_from_dspace;
 volatile uint8_t received_buffer_size = 0;
 volatile uint8_t command_handler_request = 0; // 0=NO, 1=Process
 
@@ -123,21 +131,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   // DSpace Connected UaRT
-  if(huart->Instance == USART1)
+  if(huart->Instance == DSPACE_USART)
   {
-	if (received_data == 'd') {
+	if (received_data_from_dspace == 'd') {
       dSpace_Alive = 0; // dSpace is alive!
       dSpace_req_data = 1;
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
 	}
-	if (received_data == 'n'){
+	if (received_data_from_dspace == 'n'){
 	  dSpace_Alive = 3; // set to allow LED-2 blink
 	  dSpace_req_data = 1;
 	}
+	HAL_UART_Receive_IT(&dspace_huart, &received_data_from_dspace, 1);
   }
 
   // PC-Terminal Connected UaRT
-  if(huart->Instance == USART2)
+  if(huart->Instance == TERMINAL_USART)
   {
     if (received_buffer_size == 0){
       if (received_data == (uint8_t)'@'){
@@ -164,7 +173,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         received_buffer_size += 1;
       }
     }
-    HAL_UART_Receive_IT(&huart2, &received_data, 1);
+    HAL_UART_Receive_IT(&terminal_huart, &received_data, 1);
   }
 }
 
@@ -190,7 +199,7 @@ void Cmd_Handler(){
         buffer[i] = buffer_rx[i];
       }
       buffer[received_buffer_size] = '\n';
-      HAL_UART_Transmit(&huart2, (uint8_t *) buffer, received_buffer_size + 1, 5000);
+      HAL_UART_Transmit(&terminal_huart, (uint8_t *) buffer, received_buffer_size + 1, 5000);
 
       // Command Decoder - SOlving here
       CommandDecoder();
@@ -213,7 +222,6 @@ void Cmd_Handler(){
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  //uint32_t nCount = 0;
   int num_byte = -1;
   /* USER CODE END 1 */
 
@@ -243,16 +251,18 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   // Initialize UART-2 REceive Complete Interrupt with 1-byte buffer
-  HAL_UART_Receive_IT(&huart2, &received_data, 1);
+  HAL_UART_Receive_IT(&terminal_huart, &received_data, 1);
+
+  HAL_UART_Receive_IT(&dspace_huart, &received_data_from_dspace, 1);
 
   // Initialize UART-2 Transmit Complete Interrupt with 10-byte buffer
-  HAL_UART_Transmit_IT(&huart2, buffer_tx, 10);
+  HAL_UART_Transmit_IT(&terminal_huart, buffer_tx, 10);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_TIM_Base_Start_IT(&htim2); // 2s-period timer start
+  HAL_TIM_Base_Start_IT(&htim_2s); // 2s-period timer start
 
   while (1)
   {
@@ -290,7 +300,7 @@ int main(void)
         num_byte += 1;
 
         // Now send the array to Terminal
-        HAL_UART_Transmit(&huart2, array_data, num_byte, 5000);
+        HAL_UART_Transmit(&terminal_huart, array_data, num_byte, 5000);
        }
 
 
@@ -313,7 +323,7 @@ int main(void)
         num_byte += 1;
 
         // Now send the array to dSpace
-        HAL_UART_Transmit(&huart1, array_data, num_byte, 5000);
+        HAL_UART_Transmit(&dspace_huart, array_data, num_byte, 5000);
       }
 
       dSpace_req_data = 0;
@@ -702,7 +712,7 @@ void CommandDecoder()
         b_setting_mode = 0;
         if (b_mcu_pc_terminal_enable == 1){ // LED3 is ON!
           HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-          led3_blink = 1;
+          led3_blink = 2;
         }
         else { // LED3 is OFF!
           HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);

@@ -85,13 +85,13 @@ void Error_Handler(void);
 #define MY_PRINT_0(buffer, pString) \
 	do {\
 		sprintf(buffer, pString);\
-		HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);\
+		HAL_UART_Transmit(&terminal_huart, (uint8_t *) buffer, strlen(buffer), 5000);\
 	} while (0);
 
 #define MY_PRINT_F(buffer, format, ...) \
 	do {\
 		sprintf(buffer, format, __VA_ARGS__);\
-		HAL_UART_Transmit(&huart2, (uint8_t *) buffer, strlen(buffer), 5000);\
+		HAL_UART_Transmit(&terminal_huart, (uint8_t *) buffer, strlen(buffer), 5000);\
 	} while (0);
 
 /* USER CODE END Private defines */
